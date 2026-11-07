@@ -33,6 +33,7 @@ pub mod upstream;
 pub mod wg_prober;
 pub mod wireguard;
 pub mod zerotrust;
+pub mod nway;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -75,6 +76,9 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with(args: Vec<String>) -> Result<()> {
+    // Phase B: open the encrypted ALFA config (if any) into AETHER_* before anything reads them.
+    nway::apply_encrypted_config();
+
     if cli::parse_args(args)? == cli::Parsed::Done {
         return Ok(());
     }
