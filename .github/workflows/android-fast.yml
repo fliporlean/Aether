@@ -1,0 +1,103 @@
+name: android-fast
+
+# Android-only, on demand. Builds just the two ABIs OpenLine ships — arm64-v8a
+# and armeabi-v7a — at API 24 (minSdk), so a test build is minutes not an hour.
+# A copy of release.yml's `android` job, with only two changes:
+#   - x86_64 dropped from the matrix
+#   - --platform 24 instead of 29
+# release.yml is left completely untouched.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Build ${{ matrix.archive }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+            goarch: arm64
+            goarm: ""
+            archive: aether-android-arm64.tar.gz
+          - abi: armeabi-v7a
+            target: armv7-linux-androideabi
+            goarch: arm
+            goarm: "7"
+            archive: aether-android-armv7.tar.gz
+    defaults:
+      run:
+        working-directory: aether
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build pluggable transports
+        run: bash ../pt-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}" "$PWD/LICENSES"
+
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}" "$PWD/LICENSES"
+
+      - name: Build release binary
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          under=$(echo "${{ matrix.target }}" | tr '-' '_')
+          export "BORING_BSSL_RUST_CPPLIB_${under}=static:-bundle=c++"
+          cargo ndk -t ${{ matrix.abi }} --platform 24 build --release --features tor
+          bin="target/${{ matrix.target }}/release/aether"
+          needed=$(readelf -d "$bin" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+          echo "[android ${{ matrix.abi }}] aether NEEDED: $needed"
+          if grep -qx 'libc++_shared.so' <<<"$needed"; then
+            echo "ERROR: aether still needs libc++_shared.so (static libc++ link failed)"; exit 1
+          fi
+
+      - name: Collect licenses
+        run: |
+          cp ../LICENSE LICENSES/aether-LICENSE.txt
+          python3 ../third-party-notices.py --target ${{ matrix.target }} --features tor --output LICENSES/THIRD-PARTY-NOTICES.txt
+
+      - name: Package archive
+        run: |
+          cp -R pt target/${{ matrix.target }}/release/pt
+          cp -R LICENSES target/${{ matrix.target }}/release/LICENSES
+          cd target/${{ matrix.target }}/release
+          tar -czf ../../../${{ matrix.archive }}  aether pt LICENSES
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: aether/${{ matrix.archive }}
+          if-no-files-found: error
