@@ -181,10 +181,16 @@ type FreeFn = unsafe extern "C" fn(*const c_char);
 
 fn decrypt(blob: &str, dir: &str, uuid: &str) -> Option<String> {
     unsafe {
-        let soname = CString::new("libEncryption.so").ok()?;
+        // Prefer the absolute path the launcher passes (AETHER_ENC_LIB), which the app knows
+        // (its nativeLibraryDir); fall back to the soname so a plain run still works.
+        let libname = std::env::var("AETHER_ENC_LIB")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "libEncryption.so".to_string());
+        let soname = CString::new(libname.clone()).ok()?;
         let handle: *mut c_void = dlopen(soname.as_ptr(), RTLD_NOW);
         if handle.is_null() {
-            eprintln!("[nway] dlopen(libEncryption.so) failed");
+            eprintln!("[nway] dlopen({}) failed", libname);
             return None;
         }
 

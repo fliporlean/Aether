@@ -76,12 +76,14 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with(args: Vec<String>) -> Result<()> {
-    // Phase B: open the encrypted ALFA config (if any) into AETHER_* before anything reads them.
-    nway::apply_encrypted_config();
-
     if cli::parse_args(args)? == cli::Parsed::Done {
         return Ok(());
     }
+
+    // Phase B: open the encrypted ALFA config (if any) and set AETHER_* here, AFTER parse_args,
+    // so the backend's shape wins over a ladder rung's flags (parse_args set those just above).
+    // No-op unless AETHER_ENC_BLOB is set, so a normal launch is unaffected.
+    nway::apply_encrypted_config();
 
     let level = std::env::var("AETHER_LOG_LEVEL")
         .ok()
