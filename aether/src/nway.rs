@@ -235,13 +235,19 @@ fn apply_json(plain: &str) -> Result<usize, String> {
         .as_object()
         .ok_or_else(|| "ALFA config is not a JSON object".to_string())?;
 
-    // This version wires the `aether` field (the tunnel shape). The other
-    // fields are applied on the Java + libv2ray side.
+    // This version wires the `aether` field (the tunnel shape) and, below, the
+    // top-level psiphon fields (see nway_psiphon). The remaining fields
+    // (exit_node, register_upstream, split_server) are applied on the Java +
+    // libv2ray side.
     let aether = match obj.get("aether") {
         Some(a) => a,
-        None => return Ok(0),
+        // No tunnel shape, but psiphon may still be configured.
+        None => return Ok(crate::nway_psiphon::apply_psiphon(obj)),
     };
-    apply_aether(aether)
+    // aether first, then psiphon LAST, so the backend's top-level psiphon
+    // decision overrides any `psiphon=` carried inside the aether link.
+    let n_aether = apply_aether(aether)?;
+    Ok(n_aether + crate::nway_psiphon::apply_psiphon(obj))
 }
 
 fn apply_aether(val: &serde_json::Value) -> Result<usize, String> {

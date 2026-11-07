@@ -34,6 +34,7 @@ pub mod wg_prober;
 pub mod wireguard;
 pub mod zerotrust;
 pub mod nway;
+pub mod nway_psiphon;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
