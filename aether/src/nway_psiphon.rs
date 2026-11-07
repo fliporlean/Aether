@@ -66,6 +66,16 @@ pub fn apply_psiphon(obj: &Map<String, Value>) -> usize {
     );
     n += 1;
 
+    // CHAIN ONLY: make psiphon serve on the port the module dials, with masque
+    // moved behind it. Without this, aether serves plain WARP on the dialed
+    // port and puts psiphon on a separate default port nothing reads, so the
+    // app's traffic bypasses psiphon. See chain_bind_swap.
+    if is_chain(&pos) {
+        n += chain_bind_swap();
+    } else if is_reverse(&pos) {
+        n += reverse_bind();
+    }
+
     // The rest are optional: set only when the backend sent them, so an absent
     // field leaves aether on its own default (same as the Java path omitting
     // the flag).
@@ -94,6 +104,111 @@ pub fn apply_psiphon(obj: &Map<String, Value>) -> usize {
     );
 
     n
+}
+
+/// aether's psiphon::mode() treats everything that is not off / reverse / only
+/// as Chain. This classifies the same way, so the bind swap runs for exactly
+/// the chain case (plain `--psiphon`, psiphon AFTER alfa).
+fn is_chain(pos: &str) -> bool {
+    !matches!(
+        pos,
+        "" | "0"
+            | "off"
+            | "false"
+            | "no"
+            | "reverse"
+            | "rev"
+            | "warp-over-psiphon"
+            | "only"
+            | "alone"
+            | "psiphon-only"
+            | "direct"
+    )
+}
+
+/// In chain mode the module dials AETHER_SOCKS, but aether serves plain WARP
+/// there and binds psiphon on its own default port (127.0.0.1:1821) that
+/// nothing reads - so the traffic leaves by WARP, never through psiphon. The
+/// Java non-secure path prevents this by swapping --psiphon-bind/--bind
+/// (AetherExecutor.java, "chain" branch). The secure path's Java cannot, because
+/// it never opened the config and does not know the direction, so the same swap
+/// is done here in env, before run_with reads AETHER_SOCKS:
+///
+///   AETHER_PSIPHON_BIND <- the port the module dials (psiphon serves there)
+///   AETHER_SOCKS        <- an unused port beside it (masque/held moves behind)
+///
+/// so the app -> AETHER_SOCKS(psiphon) -> masque tunnel -> psiphon -> internet.
+/// Returns how many env vars it set (0 when it could not, so aether's own
+/// default stands rather than a half-applied swap).
+fn chain_bind_swap() -> usize {
+    // If a psiphon bind was already chosen (the Java path sets one; the secure
+    // path does not), leave it - do not fight an explicit choice.
+    if std::env::var("AETHER_PSIPHON_BIND")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return 0;
+    }
+    // The port the module dials. Without an explicit --bind there is nothing to
+    // swap onto, so leave aether on its defaults.
+    let socks = match std::env::var("AETHER_SOCKS") {
+        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return 0,
+    };
+    let (host, port) = match split_host_port(&socks) {
+        Some(hp) => hp,
+        None => return 0,
+    };
+    // Where masque moves to. Beside the dialed port, never equal to it.
+    let inner = if port >= 65535 { port - 1 } else { port + 1 };
+
+    std::env::set_var("AETHER_PSIPHON_BIND", format!("{host}:{port}"));
+    std::env::set_var("AETHER_SOCKS", format!("{host}:{inner}"));
+    2
+}
+
+/// aether's psiphon::mode() treats these as Reverse (psiphon carries the
+/// tunnel; the exit is WARP). Kept exactly in step with mode().
+fn is_reverse(pos: &str) -> bool {
+    matches!(pos, "reverse" | "rev" | "warp-over-psiphon")
+}
+
+/// In reverse, psiphon is the OUTER carrier: masque serves the dialed port and
+/// dials out through psiphon, so nothing of ours reads psiphon's own port. Left
+/// unset it defaults to the fixed 127.0.0.1:1821, which another app on the
+/// device may already hold - and a failed bind there kills the rung. The Java
+/// non-secure path avoids this with `--psiphon-bind 127.0.0.1:0` (kernel-picked,
+/// never taken); the secure path's Java cannot, so the same is done here.
+/// Only when no bind was chosen already. Returns the number of vars set.
+fn reverse_bind() -> usize {
+    if std::env::var("AETHER_PSIPHON_BIND")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return 0;
+    }
+    std::env::set_var("AETHER_PSIPHON_BIND", "127.0.0.1:0");
+    1
+}
+
+/// Splits "host:port" (IPv4 or a bracketed IPv6 literal) into (host, port).
+fn split_host_port(s: &str) -> Option<(String, u16)> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix('[') {
+        // [::1]:443
+        let close = rest.find(']')?;
+        let host = &rest[..close];
+        let after = &rest[close + 1..];
+        let port = after.strip_prefix(':')?.trim().parse::<u16>().ok()?;
+        return Some((format!("[{host}]"), port));
+    }
+    let colon = s.rfind(':')?;
+    let host = &s[..colon];
+    let port = s[colon + 1..].trim().parse::<u16>().ok()?;
+    if host.is_empty() {
+        return None;
+    }
+    Some((host.to_string(), port))
 }
 
 /// A string field -> env, trimmed; skipped (0) when absent or blank.
